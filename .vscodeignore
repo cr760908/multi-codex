@@ -1,0 +1,14 @@
+tests/**
+scripts/**
+src/**
+docs/**
+!docs/public/validation.md
+dist/**
+!dist/extension.cjs
+!dist/bridge.cjs
+!dist/bridge-launcher.exe
+node_modules/**
+*.ts
+tsconfig.json
+package-lock.json
+**/*.map

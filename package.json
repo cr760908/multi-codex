@@ -1,0 +1,115 @@
+{
+  "name": "multi-codex",
+  "displayName": "Codex Account Switcher",
+  "description": "Switch saved ChatGPT accounts in the same VS Code window with the official Codex extension.",
+  "version": "0.3.3",
+  "publisher": "multi-codex-local",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cr760908/multi-codex.git"
+  },
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.100.0",
+    "node": ">=20.19.0"
+  },
+  "main": "./dist/extension.cjs",
+  "extensionKind": [
+    "ui"
+  ],
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Account switching requires a trusted local Windows window."
+    },
+    "virtualWorkspaces": {
+      "supported": false
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "multiCodex.accounts",
+        "title": "Codex Accounts: Switch Account"
+      },
+      {
+        "command": "multiCodex.saveAccount",
+        "title": "Codex Accounts: Save Current Account"
+      },
+      {
+        "command": "multiCodex.addAccount",
+        "title": "Codex Accounts: Add Account"
+      },
+      {
+        "command": "multiCodex.repairAccount",
+        "title": "Codex Accounts: Reauthenticate Account"
+      },
+      {
+        "command": "multiCodex.open",
+        "title": "Codex Accounts: Open Official Codex"
+      },
+      {
+        "command": "multiCodex.enableSeamlessSwitching",
+        "title": "Codex Accounts: Enable Seamless Switching"
+      },
+      {
+        "command": "multiCodex.disableSeamlessSwitching",
+        "title": "Codex Accounts: Disable Seamless Switching"
+      }
+    ],
+    "configuration": {
+      "title": "Codex Accounts",
+      "properties": {
+        "multiCodex.quota.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "在狀態列透過 HTTPS 查詢已儲存帳號的額度，不啟動 Codex 或 curl 子程序。關閉後不再發起額度查詢，帳號切換不受影響。"
+        },
+        "multiCodex.quota.refreshIntervalMinutes": {
+          "type": "number",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 1440,
+          "description": "VS Code 位於前景時自動查詢額度的間隔（分鐘）。啟動後 5 秒開始，多個視窗共用結果。"
+        },
+        "multiCodex.quota.backgroundRefreshIntervalMinutes": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 1440,
+          "description": "VS Code 位於背景時自動查詢額度的間隔（分鐘）。查詢失敗時會逐步延長重試間隔。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/test.mjs",
+    "test:integration": "node scripts/switcher-integration.mjs",
+    "test:official-ui": "node --import tsx scripts/official-ui-integration.mjs",
+    "test:auth-routing": "node --import tsx scripts/auth-routing-probe.ts",
+    "test:reload": "node scripts/switcher-reload-probe.mjs",
+    "package": "vsce package --target win32-x64 --no-dependencies --allow-missing-repository --no-rewrite-relative-links",
+    "vscode:prepublish": "npm run build"
+  },
+  "dependencies": {
+    "smol-toml": "1.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@types/vscode": "1.100.0",
+    "@vscode/vsce": "3.6.0",
+    "esbuild": "0.28.2",
+    "tsx": "4.20.5",
+    "typescript": "5.9.3"
+  }
+}

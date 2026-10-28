@@ -1,0 +1,65 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {spawn} from 'node:child_process';
+import {connect} from 'node:net';
+import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,existsSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
+import {prepareBridge,bridgeDescriptor} from '../../src/switcher/BridgeInstall';
+import {BridgeConnection} from '../../src/switcher/BridgeConnection';
+import {JsonRpcClient} from '../../src/protocol/JsonRpcClient';
+import {ControlPeer} from '../../src/bridge/ControlPeer';
+
+test('Windows launcher preserves pipes and host identity, rejects a wrong capability, and switches without exiting',async t=>{
+  const root=mkdtempSync(join(tmpdir(),'codex bridge & launcher-')),home=join(root,'home');mkdirSync(home);
+  const launcher=prepareBridge(resolve('dist'),root,'test',process.execPath,process.execPath);
+  const child=spawn(launcher,[resolve('tests/bridge/server.cjs'),'app-server'],{env:{...process.env,CODEX_HOME:home},stdio:'pipe',windowsHide:true});
+  const rpc=new JsonRpcClient(child,{timeoutMs:5000});
+  const renewals:{accountId:string;email:string}[]=[];
+  const bridge=new BridgeConnection(()=>launcher,home,async(accountId,email)=>{
+    renewals.push({accountId,email});return {accessToken:'renewed-b',accountId,email};
+  });
+  t.after(async()=>{bridge.dispose();await rpc.dispose();rmSync(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
+  await rpc.request('initialize',{clientInfo:{name:'fixture',version:'1'}});rpc.notify('initialized');
+  const file=bridgeDescriptor(launcher,process.pid);
+  for(const until=Date.now()+3000;!existsSync(file);await new Promise(r=>setTimeout(r,20)))assert.ok(Date.now()<until,'descriptor missing');
+  const descriptor=JSON.parse(readFileSync(file,'utf8'));
+  const socket=connect(descriptor.endpoint);await new Promise<void>(r=>socket.once('connect',r));
+  const unauthorized=new ControlPeer(socket,async()=>{});
+  await assert.rejects(unauthorized.request('hello',{nonce:'0'.repeat(64),home}),/unauthorized/);unauthorized.close();
+  const a={accessToken:'access-a',accountId:'a',email:'a@example.test'},b={accessToken:'access-b',accountId:'b',email:'b@example.test'};
+  const initial=await rpc.request<any>('echo',{text:'quotes " and \\ paths'});
+  await bridge.switchAccount(b,a);
+  const after=await rpc.request<any>('echo',{text:'中文'});
+  assert.equal(after.account,'b');assert.equal(after.pid,initial.pid);assert.equal(after.echo.text,'中文');
+  assert.equal((await rpc.request<any>('trigger-refresh')).tokenUpdated,true);
+  assert.deepEqual(renewals,[{accountId:'b',email:'b@example.test'}]);
+  await bridge.switchAccount(a,{...b,accessToken:'renewed-b'});
+  assert.equal((await rpc.request<any>('echo',{})).account,'a');
+  assert.equal(child.exitCode,null);
+  bridge.dispose();await rpc.dispose();
+  assert.equal(child.exitCode,0);assert.equal(child.killed,false);assert.equal(existsSync(file),false);
+});
+
+test('a running bridge must match the expected official CLI, including an already cached connection',async t=>{
+  const root=mkdtempSync(join(tmpdir(),'codex-runtime-check-')),home=join(root,'home');mkdirSync(home);
+  const launcher=prepareBridge(resolve('dist'),root,'test',process.execPath,process.execPath);
+  const child=spawn(launcher,[resolve('tests/bridge/server.cjs'),'app-server'],{env:{...process.env,CODEX_HOME:home},stdio:'pipe',windowsHide:true});
+  const rpc=new JsonRpcClient(child,{timeoutMs:5000});
+  let expected=process.execPath;
+  const bridge=new BridgeConnection(()=>launcher,home,async()=>{throw new Error();},process.pid,()=>expected);
+  t.after(async()=>{bridge.dispose();await rpc.dispose();rmSync(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
+  await rpc.request('initialize',{clientInfo:{name:'fixture',version:'1'}});rpc.notify('initialized');
+  const file=bridgeDescriptor(launcher,process.pid);
+  for(const until=Date.now()+3000;!existsSync(file);await new Promise(r=>setTimeout(r,20)))assert.ok(Date.now()<until);
+  await bridge.ready();
+  expected=join(root,'updated-codex.exe');
+  await assert.rejects(bridge.ready(),/runtime-outdated/);
+  bridge.dispose();
+  await assert.rejects(bridge.ready(),/runtime-outdated/);
+  expected=process.execPath;
+  const descriptor=JSON.parse(readFileSync(file,'utf8'));delete descriptor.cli;
+  writeFileSync(file,JSON.stringify(descriptor));
+  await assert.rejects(bridge.ready(),/runtime-outdated/);
+  assert.equal(child.exitCode,null);
+});

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.vsix
+*.log
+
+# Local plans, diagnostics, historical patches and account-related receipts.
+docs/**
+!docs/public/
+!docs/public/**
+.codex/
+.vscode/
+.env
+.env.*
+auth.json
+*-temp/
