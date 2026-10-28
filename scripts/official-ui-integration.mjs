@@ -10,7 +10,7 @@ const version=JSON.parse(readFileSync('package.json','utf8')).version;
 const root=join(process.env.LOCALAPPDATA,'MultiCodex','official-ui-tests',new Date().toISOString().replace(/[:.]/g,'-'));
 for(const part of ['workspace','home','extensions','user-data/User'])mkdirSync(join(root,part),{recursive:true});
 const code=join(process.env.LOCALAPPDATA,'Programs','Microsoft VS Code','Code.exe');
-const launcher=prepareBridge(resolve('dist'),join(root,'user-data','User','globalStorage','multi-codex-local.multi-codex'),version,code,join(official,'bin','windows-x86_64','codex.exe'));
+const launcher=prepareBridge(resolve('dist'),join(root,'user-data','User','globalStorage','multi-codex-local.multi-codex'),code,join(official,'bin','windows-x86_64','codex.exe'));
 writeFileSync(join(root,'home','config.toml'),'cli_auth_credentials_store = "file"\n');
 writeFileSync(join(root,'user-data','User','settings.json'),JSON.stringify({'multiCodex.quota.enabled':false,'chatgpt.cliExecutable':launcher,'workbench.startupEditor':'none'}));
 const receipt=join(root,'receipt.json');

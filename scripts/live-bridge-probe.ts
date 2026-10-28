@@ -20,7 +20,7 @@ async function main(){
   writeFileSync(join(home,'config.toml'),'model_provider = "openai"\ncli_auth_credentials_store = "file"\n');
   const code=process.env.MULTICODEX_TEST_CODE||join(process.env.LOCALAPPDATA!,'Programs','Microsoft VS Code','Code.exe');
   const cli=join(official,'bin','windows-x86_64','codex.exe');
-  const launcher=prepareBridge(resolve('dist'),root,'probe',code,cli);
+  const launcher=prepareBridge(resolve('dist'),root,code,cli);
   const child=spawn(launcher,['app-server'],{cwd:home,env:buildEnvironment(process.env,home).env,stdio:'pipe',windowsHide:true});
   const peer=new JsonRpcClient(child,{timeoutMs:20000});
   const bridge=new BridgeConnection(()=>launcher,home,async()=>{throw new Error('Renewal is excluded from this probe');},process.pid,()=>cli);

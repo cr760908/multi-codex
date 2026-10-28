@@ -12,7 +12,7 @@ import {ControlPeer} from '../../src/bridge/ControlPeer';
 
 test('Windows launcher preserves pipes and host identity, rejects a wrong capability, and switches without exiting',async t=>{
   const root=mkdtempSync(join(tmpdir(),'codex bridge & launcher-')),home=join(root,'home');mkdirSync(home);
-  const launcher=prepareBridge(resolve('dist'),root,'test',process.execPath,process.execPath);
+  const launcher=prepareBridge(resolve('dist'),root,process.execPath,process.execPath);
   const child=spawn(launcher,[resolve('tests/bridge/server.cjs'),'app-server'],{env:{...process.env,CODEX_HOME:home},stdio:'pipe',windowsHide:true});
   const rpc=new JsonRpcClient(child,{timeoutMs:5000});
   const renewals:{accountId:string;email:string}[]=[];
@@ -43,7 +43,7 @@ test('Windows launcher preserves pipes and host identity, rejects a wrong capabi
 
 test('a running bridge must match the expected official CLI, including an already cached connection',async t=>{
   const root=mkdtempSync(join(tmpdir(),'codex-runtime-check-')),home=join(root,'home');mkdirSync(home);
-  const launcher=prepareBridge(resolve('dist'),root,'test',process.execPath,process.execPath);
+  const launcher=prepareBridge(resolve('dist'),root,process.execPath,process.execPath);
   const child=spawn(launcher,[resolve('tests/bridge/server.cjs'),'app-server'],{env:{...process.env,CODEX_HOME:home},stdio:'pipe',windowsHide:true});
   const rpc=new JsonRpcClient(child,{timeoutMs:5000});
   let expected=process.execPath;

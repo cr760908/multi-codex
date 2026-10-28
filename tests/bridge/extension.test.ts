@@ -17,7 +17,7 @@ test('selecting saved accounts through the extension updates the live backend wi
   const root=mkdtempSync(join(tmpdir(),'codex-live-ui-')),home=join(root,'home');mkdirSync(home);
   const official=join(root,'official'),cli=join(official,'bin','windows-x86_64','codex.exe');
   mkdirSync(dirname(cli),{recursive:true});copyFileSync(process.execPath,cli);
-  const launcher=prepareBridge(resolve('dist'),root,'test',process.execPath,cli);
+  const launcher=prepareBridge(resolve('dist'),root,process.execPath,cli);
   const child=spawn(launcher,[resolve('tests/bridge/server.cjs'),'app-server'],{env:{...process.env,CODEX_HOME:home},stdio:'pipe',windowsHide:true});
   const peer=new JsonRpcClient(child,{timeoutMs:5000});
   const secrets=new Map<string,string>();const secretStore={get:async(k:string)=>secrets.get(k),store:async(k:string,v:string)=>{secrets.set(k,v);}};
@@ -66,7 +66,7 @@ test('selecting saved accounts through the extension updates the live backend wi
   await vault.save(auth('b'));rowAction=undefined;
   writeFileSync(join(home,'auth.json'),auth('c'));selected='b';
   await commands.get('multiCodex.accounts')!();
-  assert.equal(errors.length,1);assert.deepEqual(recoveryActions,['重新啟動擴充']);
+  assert.equal(errors.length,1);assert.deepEqual(recoveryActions,['重新載入視窗']);
   assert.deepEqual(executed,[]);
   assert.equal(JSON.parse(readFileSync(join(home,'auth.json'),'utf8')).tokens.account_id,'c');
   assert.equal((await peer.request<any>('echo')).account,'a');

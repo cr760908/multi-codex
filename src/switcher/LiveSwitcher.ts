@@ -36,7 +36,7 @@ export class LiveSwitcher {
       if(original&&parseAuth(original).id!==parseAuth(raw).id)await this.vault.save(original);
       await this.vault.save(raw);
       try{await this.bridge.ready();return await this.activate(raw,original);}
-      catch{throw new SwitchError('新登入已安全儲存，但未確認切換完成。請核對官方登入狀態，再從帳號清單選取；必要時重新啟動擴充。');}
+      catch{throw new SwitchError('新登入已安全儲存，但未確認切換完成。請核對官方登入狀態，再從帳號清單選取；必要時重新載入視窗。');}
     });
   }
   private async activate(target:string,original:string|undefined){

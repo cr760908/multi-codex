@@ -2,7 +2,7 @@
   "name": "multi-codex",
   "displayName": "Codex Account Switcher",
   "description": "Switch saved ChatGPT accounts in the same VS Code window with the official Codex extension.",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "publisher": "multi-codex-local",
   "private": true,
   "repository": {

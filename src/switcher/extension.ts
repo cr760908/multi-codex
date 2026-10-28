@@ -67,13 +67,17 @@ export function activate(context: vscode.ExtensionContext) {
     home=>createLoginPeer(officialCli(),home,'credential refresh',helperLog)).refresh(raw));
   context.subscriptions.push({dispose:()=>bridge.dispose()});
   function installedBridge(){
-    return prepareBridge(join(context.extensionPath,'dist'),context.globalStorageUri.fsPath,context.extension.packageJSON.version,process.execPath,officialCli());
+    return prepareBridge(join(context.extensionPath,'dist'),context.globalStorageUri.fsPath,process.execPath,officialCli(),bridgeLauncher());
   }
-  async function restartManagedBridge(){
+  // Restarting only the extension host while the official webview is still loading leaves it
+  // stuck on "Codex could not start" until the window reloads, so reload the whole window.
+  const reloadLabel='重新載入視窗';
+  const reloadWindow=()=>vscode.commands.executeCommand('workbench.action.reloadWindow');
+  async function reloadManagedBridge(){
     const current=bridgeLauncher();if(disposed||!current)return;
     const launcher=installedBridge();
     if(launcher.toLowerCase()!==current.toLowerCase())await vscode.workspace.getConfiguration('chatgpt').update('cliExecutable',launcher,vscode.ConfigurationTarget.Global);
-    await vscode.commands.executeCommand('workbench.action.restartExtensionHost');
+    await reloadWindow();
   }
   let runtimeUpdate=Promise.resolve();
   let notifiedRuntime:string|undefined;
@@ -87,14 +91,14 @@ export function activate(context: vscode.ExtensionContext) {
       const launcher=installedBridge();
       const changed=launcher.toLowerCase()!==current.toLowerCase();
       // A live official extension may react to a configuration change itself.
-      // Defer bundle migration until the user explicitly chooses to restart.
+      // Defer bundle migration until the user explicitly chooses to reload.
       if(changed&&!vscode.extensions.getExtension('openai.chatgpt')?.isActive)await vscode.workspace.getConfiguration('chatgpt').update('cliExecutable',launcher,vscode.ConfigurationTarget.Global);
       const notificationKey=launcher+'\n'+expected;
       if((changed||previous!==expected)&&notifiedRuntime!==notificationKey){
         notifiedRuntime=notificationKey;
         helperLog('Managed bridge runtime updated; running sessions were not restarted.');
-        void vscode.window.showInformationMessage('帳號切換橋接已更新。請先完成進行中的工作，再重新啟動擴充以套用；目前工作不會自動中斷。','重新啟動擴充')
-          .then(choice=>{if(choice)return restartManagedBridge();})
+        void vscode.window.showInformationMessage('帳號切換橋接已更新。請先完成進行中的工作，再重新載入視窗以套用；目前工作不會自動中斷。',reloadLabel)
+          .then(choice=>{if(choice)return reloadManagedBridge();})
           .then(undefined,()=>{helperLog('Managed bridge restart failed. Run Enable Seamless Switching to retry.');});
       }
     }).catch(()=>{helperLog('Managed bridge runtime update failed. Run Enable Seamless Switching to retry.');});
@@ -281,18 +285,18 @@ export function activate(context: vscode.ExtensionContext) {
     catch (error) {
       const bridgeErrors:Record<string,string>={
         'not-enabled':'請先從帳號選單啟用免重載切換。',
-        'not-ready':'帳號橋接尚未就緒。首次啟用後請執行 Developer: Restart Extension Host，再開啟官方 Codex。',
+        'not-ready':'帳號橋接尚未就緒。首次啟用後請重新載入視窗，再開啟官方 Codex。',
         'busy':'Codex 尚有任務或請求進行中，請完成後再切換帳號。',
-        'out-of-sync':'官方 Codex 與共用登入檔的身分不同，或憑證不足以核對。請先完成工作並關閉其他共用登入的 Codex，再重新啟動擴充以依登入檔同步，之後重選帳號。',
-        'runtime-outdated':'官方 Codex 已更新，但執行中的帳號橋接仍使用舊後端。請先完成工作，再重新啟動擴充以套用更新。',
+        'out-of-sync':'官方 Codex 與共用登入檔的身分不同，或憑證不足以核對。請先完成工作並關閉其他共用登入的 Codex，再重新載入視窗以依登入檔同步，之後重選帳號。',
+        'runtime-outdated':'官方 Codex 已更新，但執行中的帳號橋接仍使用舊後端。請先完成工作，再重新載入視窗以套用更新。',
         'switch-failed':'切換未通過帳號驗證，已還原原本帳號。請重新登入並修復目標帳號。',
-        'rollback-failed':'切換中斷，無法確認後端是否已還原。請先核對官方帳號，再重新啟動擴充。',
+        'rollback-failed':'切換中斷，無法確認後端是否已還原。請先核對官方帳號，再重新載入視窗。',
         'disconnected':'帳號橋接連線中斷，未確認切換成功；請核對官方帳號後重試。',
       };
       const message=error instanceof SwitchError ? error.message : error instanceof BridgeFailure ? bridgeErrors[error.code]??'帳號橋接未完成切換，請核對官方登入狀態。' : '帳號操作失敗，請檢查登入檔案與 VS Code 加密儲存是否可用。';
       if(error instanceof BridgeFailure&&['out-of-sync','runtime-outdated','not-ready'].includes(error.code)){
-        const choice=await vscode.window.showErrorMessage(message,'重新啟動擴充');
-        if(choice)await restartManagedBridge();
+        const choice=await vscode.window.showErrorMessage(message,reloadLabel);
+        if(choice)await reloadManagedBridge();
       }else void vscode.window.showErrorMessage(message);
     } finally {busy = false; refresh();}
   }
@@ -314,8 +318,8 @@ export function activate(context: vscode.ExtensionContext) {
     if(!current)await context.globalState.update('multiCodex.previousCli',{value:config.inspect<string>('cliExecutable')?.globalValue??null});
     const launcher=installedBridge();
     await config.update('cliExecutable',launcher,vscode.ConfigurationTarget.Global);
-    const choice=await vscode.window.showInformationMessage('免重載切換已啟用。首次需要重新啟動擴充執行環境（其他擴充也會重新啟動），之後選帳號不會重載視窗。','重新啟動擴充');
-    if(choice)await vscode.commands.executeCommand('workbench.action.restartExtensionHost');
+    const choice=await vscode.window.showInformationMessage('免重載切換已啟用。首次需要重新載入視窗一次，之後選帳號不會重載視窗。',reloadLabel);
+    if(choice)await reloadWindow();
   }
 
   async function disableSeamlessSwitching(){
@@ -323,8 +327,8 @@ export function activate(context: vscode.ExtensionContext) {
     const previous=context.globalState.get<{value:string|null}>('multiCodex.previousCli');
     await vscode.workspace.getConfiguration('chatgpt').update('cliExecutable',previous?.value??undefined,vscode.ConfigurationTarget.Global);
     bridge.dispose();
-    const choice=await vscode.window.showInformationMessage('已還原官方 Codex 啟動設定，重新啟動擴充後生效。','重新啟動擴充');
-    if(choice)await vscode.commands.executeCommand('workbench.action.restartExtensionHost');
+    const choice=await vscode.window.showInformationMessage('已還原官方 Codex 啟動設定，重新載入視窗後生效。',reloadLabel);
+    if(choice)await reloadWindow();
   }
 
   async function loginAccount(expected?: SavedAccount) {
