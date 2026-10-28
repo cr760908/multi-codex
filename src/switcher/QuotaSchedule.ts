@@ -22,7 +22,7 @@ export function quotaRetryDelay(intervalMs: number, failures = 0): number {
   return Math.min(intervalMs * 2 ** Math.min(failures - 1, 16), Math.max(MAX_BACKOFF_MS, intervalMs));
 }
 
-export interface QuotaTiming {force: boolean; focused: boolean; now: number; activatedAt: number; intervalMs: number; lastAttempt?: number; failures?: number}
+export interface QuotaTiming {force: boolean; now: number; activatedAt: number; intervalMs: number; lastAttempt?: number; failures?: number}
 
 export function quotaWindowOpen(t: QuotaTiming): boolean {
   return t.force || t.now >= t.activatedAt + QUOTA_STARTUP_DELAY_MS;
@@ -46,7 +46,9 @@ export function authFingerprint(raw: string): string {
 // failedAuth: fingerprint of the credentials whose last query failed.
 export interface QuotaRecord {checkedAt: number; revision: string; quota?: Quota; error?: string; failures?: number; failedAuth?: string}
 interface CacheFile {version: 1; accounts: Record<string, QuotaRecord>}
-const MAX_ENTRIES = 100, MAX_BYTES = 256 * 1024;
+const MAX_ENTRIES = 100, MAX_BYTES = 256 * 1024, LEASE_MS = 60000;
+// Another window took, released or is still deleting a lease: skip this pass.
+const CONTENDED = new Set(['EEXIST', 'ENOENT', 'EPERM', 'EACCES', 'EBUSY']);
 
 function finite(value: unknown): value is number {return typeof value === 'number' && Number.isFinite(value);}
 function nullableInt(value: unknown, min: number) {return value === null || (Number.isSafeInteger(value) && (value as number) >= min);}
@@ -71,6 +73,15 @@ function record(value: unknown): QuotaRecord | undefined {
     ...(r.failedAuth !== undefined ? {failedAuth: r.failedAuth} : {})};
 }
 
+// How long ago a lease was written. A lease from the future means the clock moved
+// back; that distance counts too, so it cannot block every window until then.
+function leaseAge(path: string): {content: string; age: number} {
+  const content = readFileSync(path, 'utf8');
+  let created = lstatSync(path).mtimeMs;
+  try {const value = JSON.parse(content); if (finite(value.at)) created = value.at;} catch {}
+  return {content, age: Math.abs(Date.now() - created)};
+}
+
 // Quota results shared by every VS Code window of this profile, so opening or
 // reloading a window does not query again. Holds no credentials (only the short
 // fingerprint above). Failures to read
@@ -81,20 +92,26 @@ export class QuotaCache {
   // Serialize HTTP queries across extension hosts. The request itself has a
   // ten-second deadline; a one-minute lease recovers after a crashed window.
   acquire(): (()=>void)|undefined {
-    const lock=join(dirname(this.file),'.quota-query.lock');
-    plainDirectory(dirname(this.file));plainFile(lock);
-    if(existsSync(lock)){
-      try{
-        const prior=readFileSync(lock,'utf8');let created=lstatSync(lock).mtimeMs;
-        try{const value=JSON.parse(prior);if(typeof value.at==='number'&&Number.isFinite(value.at))created=value.at;}catch{}
-        if(Date.now()-created<60000)return;
-        if(readFileSync(lock,'utf8')===prior)unlinkSync(lock);
-      }catch{return;}
+    const dir=dirname(this.file),lock=join(dir,'.quota-query.lock'),breaker=lock+'.break';
+    try{
+      plainDirectory(dir);plainFile(lock);plainFile(breaker);
+      if(existsSync(lock)){
+        const stale=leaseAge(lock);
+        if(stale.age<LEASE_MS)return;
+        // Only one window may remove a stale lease, or two could each delete the
+        // other's fresh one. A breaker left by a crash expires the same way.
+        if(existsSync(breaker)&&leaseAge(breaker).age>=LEASE_MS)unlinkSync(breaker);
+        writeFileSync(breaker,JSON.stringify({at:Date.now()}),{flag:'wx',mode:0o600});
+        try{if(readFileSync(lock,'utf8')===stale.content)unlinkSync(lock);}
+        finally{unlinkSync(breaker);}
+      }
+      const owner=JSON.stringify({at:Date.now(),nonce:randomUUID()});
+      writeFileSync(lock,owner,{flag:'wx',mode:0o600});
+      return()=>{try{if(readFileSync(lock,'utf8')===owner)unlinkSync(lock);}catch{}};
+    }catch(error){
+      if(CONTENDED.has((error as NodeJS.ErrnoException).code??''))return;
+      throw error;
     }
-    const owner=JSON.stringify({at:Date.now(),nonce:randomUUID()});
-    try{writeFileSync(lock,owner,{flag:'wx',mode:0o600});}
-    catch(error){if((error as NodeJS.ErrnoException).code==='EEXIST')return;throw error;}
-    return()=>{try{if(readFileSync(lock,'utf8')===owner)unlinkSync(lock);}catch{}};
   }
 
   private load(): Record<string, QuotaRecord> {

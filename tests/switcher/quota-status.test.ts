@@ -23,6 +23,10 @@ async function machine(t:TestContext) {
   const home=join(root,'home'), storage=join(root,'storage');
   mkdirSync(home);
   const secrets=new Map<string,string>();
+  // SecretStorage reads and quota lease files created, across every window.
+  const counts={secretReads:0,leases:0};
+  const realFs=createRequire(resolve('package.json'))('node:fs');
+  const fsSpy={...realFs,writeFileSync:(path:unknown,...rest:unknown[])=>{if(String(path).endsWith('.quota-query.lock'))counts.leases++;return realFs.writeFileSync(path,...rest);}};
   const requests:{done:boolean}[]=[];
   let spawnCount=0;
   const logs:string[]=[];
@@ -62,13 +66,13 @@ async function machine(t:TestContext) {
       extensions:{getExtension:()=>undefined,onDidChange:noop},
       commands:{registerCommand:(name:string,fn:()=>Promise<unknown>)=>{commands.set(name,fn);return noop();}},
     };
-    const context={subscriptions:[] as {dispose():void}[],globalStorageUri:{fsPath:storage},secrets:{get:async(k:string)=>secrets.get(k),store:async(k:string,v:string)=>{secrets.set(k,v);}}};
+    const context={subscriptions:[] as {dispose():void}[],globalStorageUri:{fsPath:storage},secrets:{get:async(k:string)=>{counts.secretReads++;return secrets.get(k);},store:async(k:string,v:string)=>{secrets.set(k,v);}}};
     const module={exports:{} as any};
     const require=createRequire(resolve('package.json'));
     runInNewContext(compiled,{module,exports:module.exports,Buffer,TextDecoder,AbortController,URL,setTimeout,clearTimeout,console,Date:FakeDate,
       setInterval:(fn:()=>void)=>{tick=fn;return {unref(){}};},clearInterval:()=>{},
       process:{platform:'win32',arch:'x64',env:{...process.env,CODEX_HOME:home}},
-      require:(name:string)=>name==='vscode'?vscode:name==='node:child_process'?{spawn:()=>{spawnCount++;throw new Error('quota subprocess forbidden');}}:name==='node:https'?{request:(url:URL,options:any,callback:any)=>{
+      require:(name:string)=>name==='vscode'?vscode:name==='node:fs'?fsSpy:name==='node:child_process'?{spawn:()=>{spawnCount++;throw new Error('quota subprocess forbidden');}}:name==='node:https'?{request:(url:URL,options:any,callback:any)=>{
         assert.equal(String(url),'https://chatgpt.com/backend-api/wham/usage');
         const entry={done:false};requests.push(entry);
         const req=request({hostname:'127.0.0.1',port:(server.address() as any).port,path:url.pathname,...options,agent:false},(res)=>{res.once('end',()=>{entry.done=true;});res.once('close',()=>{entry.done=true;});callback(res);});
@@ -79,7 +83,7 @@ async function machine(t:TestContext) {
     const api=module.exports.activate(context);
     return {api,commands,state,tick:()=>tick(),visible:()=>statuses.filter(s=>s.visible&&!s.disposed)};
   }
-  return {home,requests,logs,config,helper,clock,openWindow};
+  return {home,storage,requests,logs,config,helper,clock,counts,openWindow};
 }
 
 test('status displays both account quotas, marks current, and recovers from per-account failure without auth changes', async t => {
@@ -230,4 +234,41 @@ test('a failed refresh keeps last successful values visibly stale with their ori
   assert.ok(stale.tooltip.includes(stamp));assert.match(stale.tooltip,/更新失敗/);
   helper.fail=false;await one.commands.get('multiCodex.refreshQuotas')!();
   assert.ok(one.visible().some(s=>s.text==='● A：5h 20%／Week 40%'));
+});
+
+test('accounts that are not due read no saved credentials and take no lease',async t=>{
+  const {home,requests,clock,counts,openWindow}=await machine(t);
+  const one=openWindow();
+  writeFileSync(join(home,'auth.json'),auth('a'));await one.commands.get('multiCodex.saveAccount')!();
+  writeFileSync(join(home,'auth.json'),auth('b'));await one.commands.get('multiCodex.saveAccount')!();
+  clock.now+=5000;one.tick();
+  await until(()=>one.visible().some(s=>s.text==='A：5h 20%／Week 40%')&&one.visible().some(s=>s.text==='● B：5h 65%／Week 80%'),'first query did not finish');
+  await sleep(50);
+  const reads=counts.secretReads,leases=counts.leases;
+  clock.now+=30000;one.tick();await sleep(200);
+  assert.equal(requests.length,2);
+  assert.equal(counts.secretReads-reads,1,'only the account list may be read while nothing is due');
+  assert.equal(counts.leases-leases,0,'a lease was taken while nothing was due');
+});
+
+test('a forced refresh waits for a lease another window holds instead of skipping',async t=>{
+  const {home,storage,requests,clock,openWindow}=await machine(t);
+  writeFileSync(join(home,'auth.json'),auth('a'));
+  const one=openWindow();
+  const lock=join(storage,'.quota-query.lock');
+  mkdirSync(storage,{recursive:true});writeFileSync(lock,JSON.stringify({at:clock.now,nonce:'other-window'}));
+  setTimeout(()=>rmSync(lock,{force:true}),300);
+  await one.commands.get('multiCodex.refreshQuotas')!();
+  assert.equal(requests.length,1,'the forced refresh skipped the account');
+});
+
+test('an unusable lease path is reported with automatic retry, not a manual refresh',async t=>{
+  const {home,storage,requests,openWindow}=await machine(t);
+  writeFileSync(join(home,'auth.json'),auth('a'));
+  mkdirSync(join(storage,'.quota-query.lock'),{recursive:true});
+  const one=openWindow();
+  await one.commands.get('multiCodex.refreshQuotas')!();
+  const row=one.visible().find(s=>s.text==='● A：無法取得');assert.ok(row,JSON.stringify(one.visible()));
+  assert.ok(row.tooltip.includes('無法取得額度，將於下次自動更新時重試。'),row.tooltip);
+  assert.equal(requests.length,0);
 });

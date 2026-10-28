@@ -47,6 +47,9 @@ test('selecting saved accounts through the extension updates the live backend wi
     process:{platform:process.platform,arch:process.arch,pid:process.pid,execPath:process.execPath,env:{...process.env,CODEX_HOME:home}},require:(name:string)=>name==='vscode'?vscode:require(name)});
   module.exports.activate(context);
   t.after(async()=>{for(const d of context.subscriptions)d.dispose();await module.exports.deactivate();await peer.dispose();rmSync(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
+  // Only deliberate hidden commands: switchSavedAccount takes an argument, refreshQuotas is diagnostic.
+  const contributed=JSON.parse(readFileSync('package.json','utf8')).contributes.commands.map((c:{command:string})=>c.command);
+  assert.deepEqual([...commands.keys()].filter(id=>!contributed.includes(id)).sort(),['multiCodex.refreshQuotas','multiCodex.switchSavedAccount']);
   for(selected of ['b','a']){
     await commands.get('multiCodex.accounts')!();
     assert.deepEqual(errors,[]);

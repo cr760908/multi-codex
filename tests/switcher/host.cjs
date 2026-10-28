@@ -14,7 +14,7 @@ exports.run = async () => {
     report.extensionVersion=extension.packageJSON.version;
     const api = await extension.activate();
     const commands = await vscode.commands.getCommands(true);
-    for (const name of ['accounts','saveAccount','addAccount','repairAccount','manageAccounts','open','refreshQuotas','enableSeamlessSwitching','disableSeamlessSwitching']) assert.ok(commands.includes(`multiCodex.${name}`), name);
+    for (const name of ['accounts','saveAccount','addAccount','repairAccount','open','refreshQuotas','enableSeamlessSwitching','disableSeamlessSwitching']) assert.ok(commands.includes(`multiCodex.${name}`), name);
     assert.equal(extension.packageJSON.contributes.views, undefined);
     report.checks.push('native account commands registered; custom chat and task views removed');
     const file = path.join(process.env.CODEX_HOME, 'auth.json');

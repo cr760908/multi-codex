@@ -21,7 +21,9 @@ exports.run=async()=>{
           if(text.includes('[startup][renderer] app routes mounted')&&text.includes('Initialize received')){
             report.rendererReady=true;report.rendererEvidence='app routes mounted';report.backendInitialized=true;
             report.bridgeConfigured=/bridge-launcher\.exe$/.test(vscode.workspace.getConfiguration('chatgpt').get('cliExecutable'));
-            report.pass=report.bridgeConfigured;break;
+            // The renderer has started; without the bridge, waiting longer cannot pass.
+            if(!report.bridgeConfigured)throw new Error('Official renderer started without the managed bridge configured');
+            report.pass=true;break;
           }
         }
       }
@@ -29,6 +31,8 @@ exports.run=async()=>{
     }
     if(!report.pass)throw new Error('No successful official renderer startup was observed');
   }catch(error){report.error=error.message;}
-  fs.writeFileSync(process.env.MULTICODEX_UI_RECEIPT,JSON.stringify(report,null,2));
+  // Write then rename, so the waiting script never parses a partial receipt.
+  const receipt=process.env.MULTICODEX_UI_RECEIPT;
+  fs.writeFileSync(receipt+'.tmp',JSON.stringify(report,null,2));fs.renameSync(receipt+'.tmp',receipt);
   if(!report.pass)throw new Error(report.error);
 };

@@ -8,7 +8,7 @@ import { NativeAuth } from './NativeAuth';
 import { accountLabel, parseAuth, SwitchError } from './Auth';
 import { IsolatedLogin, createLoginPeer } from './IsolatedLogin';
 import { QuotaReader, quotaText, windowLabel, type Quota } from './Quota';
-import { authFingerprint, QuotaCache, quotaDue, quotaIntervalMs, quotaRetryDelay, quotaWindowOpen, type QuotaTiming } from './QuotaSchedule';
+import { authFingerprint, QuotaCache, quotaDue, quotaIntervalMs, quotaRetryDelay, quotaWindowOpen, type QuotaRecord, type QuotaTiming } from './QuotaSchedule';
 import {BridgeConnection} from './BridgeConnection';
 import {isManagedBridge,prepareBridge} from './BridgeInstall';
 import {LiveSwitcher} from './LiveSwitcher';
@@ -134,6 +134,19 @@ export function activate(context: vscode.ExtensionContext) {
     if (revision) row.revision = revision;
   }
 
+  function adoptQuota(row: QuotaRow, shared: QuotaRecord) {
+    Object.assign(row, {lastAttempt: shared.checkedAt, revision: shared.revision, quota: shared.quota, error: shared.error, failures: shared.failures, failedAuth: shared.failedAuth});
+  }
+
+  // A forced refresh waits out another window's query (ten-second deadline) instead of skipping.
+  async function quotaLease(force: boolean) {
+    for (let attempt = 0; ; attempt++) {
+      const release = quotaCache.acquire();
+      if (release || !force || attempt >= 60 || disposed || quotaAbort.signal.aborted) return release;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+  }
+
   async function refreshQuotas(force = false) {
     // An automatic pass may skip every account, so a manual refresh runs after it.
     while (quotaPending) {
@@ -170,9 +183,7 @@ export function activate(context: vscode.ExtensionContext) {
           // result of a query whose claim was already adopted. Never adopt an older attempt:
           // if this window's own writes fail, its in-memory throttle must still hold.
           const shared = quotaCache.get(account.id);
-          if (shared && shared.revision !== row.revision && shared.checkedAt >= (row.lastAttempt ?? -Infinity)) {
-            Object.assign(row, {lastAttempt: shared.checkedAt, revision: shared.revision, quota: shared.quota, error: shared.error, failures: shared.failures, failedAuth: shared.failedAuth});
-          }
+          if (shared && shared.revision !== row.revision && shared.checkedAt >= (row.lastAttempt ?? -Infinity)) adoptQuota(row, shared);
           const alias = index < 26 ? String.fromCharCode(65+index) : `${index+1}`;
           const render = () => {
             if (disposed) return;
@@ -192,21 +203,22 @@ export function activate(context: vscode.ExtensionContext) {
             row!.item.show();
           };
           render();
-          const timing: QuotaTiming = {force, focused: vscode.window.state.focused, now: Date.now(), activatedAt, intervalMs: settings.intervalMs, lastAttempt: row.lastAttempt, failures: row.failures};
+          const timing: QuotaTiming = {force, now: Date.now(), activatedAt, intervalMs: settings.intervalMs, lastAttempt: row.lastAttempt, failures: row.failures};
           if (!quotaWindowOpen(timing)) continue;
+          // Nothing due: skip the credential read and the lease. A failed row still reads
+          // its credentials, since changed credentials retry at once.
+          if (row.failedAuth === undefined && !quotaDue({...timing, credentialsChanged: false})) continue;
           let authHash: string | undefined, checkedAt: number | undefined;
           let release:(()=>void)|undefined;
           try {
             const raw = account.id === current?.id && currentRaw ? currentRaw : await vault.auth(account.id);
             authHash = authFingerprint(raw);
-            release=quotaCache.acquire();
+            release=await quotaLease(force);
             if(!release)continue;
             // SecretStorage is asynchronous: another window can finish a query
             // while we await it. Recheck the shared result under the lease.
             const latest=quotaCache.get(account.id);
-            if(latest&&latest.checkedAt>=(row.lastAttempt??-Infinity)){
-              Object.assign(row,{lastAttempt:latest.checkedAt,revision:latest.revision,quota:latest.quota,error:latest.error,failures:latest.failures,failedAuth:latest.failedAuth});
-            }
+            if(latest&&latest.checkedAt>=(row.lastAttempt??-Infinity))adoptQuota(row,latest);
             if (!quotaDue({...timing,lastAttempt:row.lastAttempt,failures:row.failures,credentialsChanged: row.failedAuth !== undefined && row.failedAuth !== authHash})) {render();continue;}
             if (quotaTurnedOff()) return;
             // Claim this account first so other windows skip it while the query runs.
@@ -218,7 +230,7 @@ export function activate(context: vscode.ExtensionContext) {
           } catch (error) {
             // Shutdown or reload interrupted the query; that is not a quota failure.
             if (quotaAbort.signal.aborted) break;
-            row.error = error instanceof SwitchError ? error.message : '無法取得額度，請稍後重新整理。';
+            row.error = error instanceof SwitchError ? error.message : '無法取得額度，將於下次自動更新時重試。';
             row.failedAuth = authHash;
             row.failures = (row.failures ?? 0) + 1;
             // Failures before a request started are throttled like any other attempt.
@@ -391,17 +403,6 @@ export function activate(context: vscode.ExtensionContext) {
     if(choice==='移除')await service.remove(account.id);
   }
 
-  async function manageAccounts() {
-    const selected = await vscode.window.showQuickPick((await vault.list()).map(a => accountItem(a, service.current()?.id)), {
-      title: '管理已儲存的 Codex 帳號', placeHolder: '選擇要改名或移除的帳號', matchOnDescription: true,
-    });
-    if (!selected) return;
-    const action = await vscode.window.showQuickPick(['重新登入並修復', '重新命名', '移除已儲存帳號'], {title: selected.account.email});
-    if (action === '重新登入並修復') await loginAccount(selected.account);
-    else if (action === '重新命名') await renameAccount(selected.account);
-    else if (action === '移除已儲存帳號') await removeAccount(selected.account);
-  }
-
   async function accounts() {
     const current = service.current();
     const selected=await showAccountMenu(await vault.list(),current?.id,!!bridgeLauncher());
@@ -419,7 +420,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
   }
 
-  const commands: Record<string, () => Promise<unknown>> = {accounts, saveAccount: saveCurrent, addAccount, repairAccount, manageAccounts, open: openNative,enableSeamlessSwitching,disableSeamlessSwitching};
+  const commands: Record<string, () => Promise<unknown>> = {accounts, saveAccount: saveCurrent, addAccount, repairAccount, open: openNative,enableSeamlessSwitching,disableSeamlessSwitching};
   for (const [name, action] of Object.entries(commands)) {
     context.subscriptions.push(vscode.commands.registerCommand(`multiCodex.${name}`, () => run(action)));
   }

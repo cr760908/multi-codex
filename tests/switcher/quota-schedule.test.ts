@@ -1,31 +1,31 @@
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, readdirSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { authFingerprint, QuotaCache, quotaDue, quotaIntervalMs, quotaRetryDelay, quotaWindowOpen, QUOTA_STARTUP_DELAY_MS } from '../../src/switcher/QuotaSchedule';
 
 const minute = 60000;
-const base = {force: false, focused: true, activatedAt: 0, intervalMs: 10 * minute, credentialsChanged: false};
+const base = {force: false, activatedAt: 0, intervalMs: 10 * minute, credentialsChanged: false};
 
-test('automatic queries start after five seconds in either focus state and respect the selected interval', () => {
+// Focus only selects the interval the caller passes in; the schedule itself ignores it.
+test('automatic queries start after five seconds and respect the selected interval', () => {
   const later = QUOTA_STARTUP_DELAY_MS + 1;
   assert.equal(quotaWindowOpen({...base, now: 4999}), false);
   assert.equal(quotaWindowOpen({...base, now: 5000}), true);
-  assert.equal(quotaWindowOpen({...base, now: 5000, focused: false}), true);
   assert.equal(quotaWindowOpen({...base, now: later}), true);
   assert.equal(quotaDue({...base, now: later}), true);
   assert.equal(quotaDue({...base, now: later, lastAttempt: later - 9 * minute}), false);
   assert.equal(quotaDue({...base, now: later, lastAttempt: later - 10 * minute}), true);
-  assert.equal(quotaDue({...base, now: later, focused: false}), true);
   assert.equal(quotaDue({...base, now: later, lastAttempt: later + 60 * minute}), true, 'clock moved back');
 });
 
 test('changed credentials after a failure retry early; manual refresh always runs', () => {
   const now = QUOTA_STARTUP_DELAY_MS + minute;
   assert.equal(quotaDue({...base, now, lastAttempt: now - 1000, credentialsChanged: true}), true);
-  assert.equal(quotaDue({...base, now: 0, focused: false, lastAttempt: 0, force: true}), true);
-  assert.equal(quotaWindowOpen({...base, now: 0, focused: false, force: true}), true);
+  assert.equal(quotaDue({...base, now: 0, lastAttempt: 0, force: true}), true);
+  assert.equal(quotaWindowOpen({...base, now: 0, force: true}), true);
 });
 
 test('consecutive failures back off exponentially up to six hours instead of retrying at a fixed rate', () => {
@@ -93,4 +93,47 @@ test('query leases serialize windows and recover a stale incomplete lock after a
   assert.equal(cache.acquire(),undefined,'an in-progress lock write must not be removed');
   const old=new Date(Date.now()-120000);utimesSync(lock,old,old);
   const recovered=cache.acquire();assert.ok(recovered,'a crashed partial write must not disable quota forever');recovered();
+});
+
+// QuotaCache calls node:fs through the shared module object, so replacing one function
+// lets a test act as another window at one exact moment of a lease check.
+const fs=createRequire(resolve('package.json'))('node:fs') as Record<string,Function>;
+function interleave(t:TestContext,name:string,path:string,other:()=>void){
+  const original=fs[name];let fired=false;
+  fs[name]=(target:unknown,...rest:unknown[])=>{if(!fired&&String(target)===path){fired=true;other();}return original.call(fs,target,...rest);};
+  t.after(()=>{fs[name]=original;});
+}
+function leaseRoot(t:TestContext){
+  const root=mkdtempSync(join(tmpdir(),'codex-quota-lease-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+  return {file:join(root,'quota-cache.json'),lock:join(root,'.quota-query.lock')};
+}
+
+test('a lease another window releases or is still deleting is skipped, never thrown',t=>{
+  const {file,lock}=leaseRoot(t);
+  const held=new QuotaCache(file).acquire();assert.ok(held);
+  // The other window releases between our existence check and our stat of its lease.
+  interleave(t,'lstatSync',lock,held);
+  assert.equal(new QuotaCache(file).acquire(),undefined);
+  // Windows refuses to create a file whose deletion is still pending.
+  interleave(t,'writeFileSync',lock,()=>{throw Object.assign(new Error('operation not permitted'),{code:'EPERM'});});
+  assert.equal(new QuotaCache(file).acquire(),undefined);
+});
+
+test('a lease stamped in the future after the clock moved back expires instead of blocking every window',t=>{
+  const {file,lock}=leaseRoot(t),cache=new QuotaCache(file);
+  writeFileSync(lock,JSON.stringify({at:Date.now()+30000,nonce:'live'}));
+  assert.equal(cache.acquire(),undefined,'a small clock correction must not break a live lease');
+  writeFileSync(lock,JSON.stringify({at:Date.now()+3600000,nonce:'crashed'}));
+  const release=cache.acquire();assert.ok(release,'quota stayed blocked until the clock caught up');release();
+});
+
+test('only one window takes over a stale lease when two judge it stale at once',t=>{
+  const {file,lock}=leaseRoot(t);
+  writeFileSync(lock,JSON.stringify({at:Date.now()-120000,nonce:'crashed'}));
+  let second:(()=>void)|undefined;
+  // The second window completes its own takeover just as the first deletes the stale lease.
+  interleave(t,'unlinkSync',lock,()=>{second=new QuotaCache(file).acquire();});
+  const first=new QuotaCache(file).acquire();
+  assert.ok(first||second,'nobody recovered the stale lease');
+  assert.ok(!(first&&second),'two windows hold the lease at once');
 });
